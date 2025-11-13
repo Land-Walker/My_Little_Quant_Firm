@@ -1,3 +1,6 @@
+#import sys
+#sys.path.append('.')
+
 from src.data_collector import DataCollector
 from src.data_loader import TimeGradDataModule
 
