@@ -1,6 +1,6 @@
 # test_dataset.py (or in a notebook cell)
 from torch.utils.data import DataLoader
-from src.dataset import FinanceDataset
+from FinD_Generator.src.data_loader import FinanceDataset
 
 # --- Configuration ---
 STOCK_PATH = 'data/raw/stock_data.csv'
