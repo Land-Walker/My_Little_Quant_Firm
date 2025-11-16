@@ -26,13 +26,13 @@ from gluonts.transform import (
     TargetDimIndicator,
 )
 
-from src.TimeGrad.pts.trainer import Trainer
-from src.TimeGrad.pts.feature import (
+from pts.trainer import Trainer
+from pts.feature import (
     fourier_time_features_from_frequency,
     lags_for_fourier_time_features_from_frequency,
 )
-from src.TimeGrad.pts.model import PyTorchEstimator
-from src.TimeGrad.pts.model.utils import get_module_forward_input_names
+from pts.model import PyTorchEstimator
+from pts.model.utils import get_module_forward_input_names
 
 # 🔥 NEW: explicit-conditioning model
 from .time_grad_network import (

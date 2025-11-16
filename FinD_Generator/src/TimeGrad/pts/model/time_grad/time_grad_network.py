@@ -7,8 +7,8 @@ import torch.nn as nn
 
 from gluonts.core.component import validated
 
-from src.TimeGrad.pts.model.utils import weighted_average
-from src.TimeGrad.pts.modules import GaussianDiffusion, DiffusionOutput, MeanScaler, NOPScaler
+from pts.model.utils import weighted_average
+from pts.modules import GaussianDiffusion, DiffusionOutput, MeanScaler, NOPScaler
 
 from .epsilon_theta import EpsilonTheta
 

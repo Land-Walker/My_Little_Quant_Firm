@@ -158,6 +158,11 @@ class ConditionalTimeGrad(nn.Module):
         # Ensure x_future has correct shape for diffusion: (batch, horizon, target_dim)
         if x_future.dim() == 2:
             x_future = x_future.unsqueeze(-1)  # (batch, horizon, 1)
+
+        # Expand conditioning to match time dimension of x_future
+        # GaussianDiffusion.log_prob expects cond to have same time dim as x
+        batch_size, horizon, _ = x_future.shape
+        cond = cond.expand(batch_size, horizon, -1)  # (batch, horizon, cond_length)
         
         # Compute diffusion loss (log probability)
         # Note: diffusion.log_prob returns negative loss, so we negate

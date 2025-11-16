@@ -1,8 +1,17 @@
+"""
+config.py - Configuration for FinD_Generator
+
+IMPORTANT: This project uses TWO different model architectures:
+1. Custom ConditionalTimeGrad (in src/models/)
+2. Standard PTS TimeGrad (NOT USED - kept for reference)
+
+Choose ONE and remove the other's config.
+"""
+
 import os
 
-from gluonts.time_feature import time_features_from_frequency_str
 # ===============================
-# Configuration
+# Data Configuration
 # ===============================
 MARKET_TICKER = "^GSPC"
 TARGET_TICKER = "AMD"
@@ -18,31 +27,37 @@ os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 GRAPH_DIR = 'FinD_Generator/image/graph/'
 os.makedirs(GRAPH_DIR, exist_ok=True)
 
+# FRED Data Sources
 FRED_DAILY_IDS = {
-        "T10Y2Y": "yield_curve",  # Yield Curve (daily)
+    "T10Y2Y": "yield_curve",
 }
 
 FRED_MONTHLY_IDS = {
-    "CPIAUCSL": "cpi",            # Consumer Price Index (monthly)
-    "UNRATE": "unemployment",     # Unemployment Rate (monthly)
-    "FEDFUNDS": "interest_rate",  # Interest Rates (monthly)
-    "BOPGSTB": "trade_balance",   # US Trade Balance (monthly)
+    "CPIAUCSL": "cpi",
+    "UNRATE": "unemployment",
+    "FEDFUNDS": "interest_rate",
+    "BOPGSTB": "trade_balance",
 }
 
 FRED_QUARTERLY_IDS = {
-    "GDPC1": "gdp",                           # Real GDP (quarterly)
-    "GFDEBTN": "gov_debt",                    # Debt Level (quarterly)
-    "M318501Q027NBEA": "gov_fiscal_balance",  # US Government Fiscal Balance (quarterly)
-    "W006RC1Q027SBEA": "tax_receipts",        # US Government Tax Receipts (quarterly)
-    "FGEXPND": "gov_spending"                 # US Government Spending (quarterly)
+    "GDPC1": "gdp",
+    "GFDEBTN": "gov_debt",
+    "M318501Q027NBEA": "gov_fiscal_balance",
+    "W006RC1Q027SBEA": "tax_receipts",
+    "FGEXPND": "gov_spending"
 }
 
+# ===============================
+# Preprocessing Configuration
+# ===============================
 WAVELET = "db4"
 WAVELET_LEVEL = 3
-PCA_VARIANCE = 0.95  # explained variance ratio for PCA
+PCA_VARIANCE = 0.95
+
 DEFAULT_SEQ_LEN = 60
 DEFAULT_HORIZON = 5
 DEFAULT_BATCH = 32
+
 TRAIN_RATIO = 0.7
 VAL_RATIO = 0.15
 
@@ -52,15 +67,36 @@ VAL_RATIO = 0.15
 MODEL_DIR = "FinD_Generator/models"
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# --- TimeGrad/GluonTS Parameters ---
-FREQ = "B"  # Business day frequency
+CHECKPOINT_DIR = "FinD_Generator/checkpoints"
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-# Based on data_loader.py defaults
-CONTEXT_LENGTH = DEFAULT_SEQ_LEN      # History length for the model
-PREDICTION_LENGTH = DEFAULT_HORIZON # Forecast horizon
+# ===============================
+# ⚠️ WARNING: CONFLICTING CONFIGURATIONS BELOW
+# ===============================
+# The following configs are for STANDARD PTS TimeGrad (GluonTS-based)
+# If you're using ConditionalTimeGrad (your custom model), DELETE THESE:
 
-# The number of features in your target time series (e.g., 4 PCA components from OHLC)
-TARGET_DIM = 4
+# --- TimeGrad/GluonTS Parameters (ONLY if using standard TimeGrad) ---
+# FREQ = "B"  # Business day frequency
+# CONTEXT_LENGTH = DEFAULT_SEQ_LEN
+# PREDICTION_LENGTH = DEFAULT_HORIZON
+# TARGET_DIM = 4  # ⚠️ WRONG - TimeGrad expects univariate (1)
+# LAGS_SEQ = [1, 2, 3, 4, 5, 6, 7, 30, 60, 90]
+# from gluonts.time_feature import time_features_from_frequency_str
+# TIME_FEATURES = time_features_from_frequency_str(FREQ)
 
-LAGS_SEQ = [1, 2, 3, 4, 5, 6, 7, 30, 60, 90]
-TIME_FEATURES = time_features_from_frequency_str(FREQ)
+# ===============================
+# Recommended: Use ConditionalTimeGrad Config
+# ===============================
+# Your custom model doesn't need these GluonTS-specific parameters
+# It uses the dataset's dynamic shapes instead
+
+CONDITIONAL_TIMEGRAD_CONFIG = {
+    'target_dim': 1,  # ✅ Univariate (required)
+    'diff_steps': 100,
+    'beta_end': 0.1,
+    'beta_schedule': 'linear',
+    'residual_layers': 8,
+    'residual_channels': 8,
+    'dilation_cycle_length': 2,
+}
