@@ -87,44 +87,37 @@ class CondUpsampler(nn.Module):
 
 class EpsilonTheta(nn.Module):
     def __init__(
-        self,
-        target_dim,
-        cond_length,
-        time_emb_dim=16,
-        residual_layers=8,
-        residual_channels=8,
-        dilation_cycle_length=2,
-        residual_hidden=64,
-        *,
-        # explicit-conditioning auxiliary args (optional)
-        dyn_dim: int = 0,
-        static_dim: int = 0,
+    self,
+    target_dim,
+    cond_length,
+    time_emb_dim=16,
+    residual_layers=8,
+    residual_channels=8,
+    dilation_cycle_length=2,
+    residual_hidden=64,
+    *,
+    # explicit-conditioning auxiliary args (optional)
+    dyn_dim: int = 0,
+    static_dim: int = 0,
     ):
-        """
-        Extended EpsilonTheta that supports explicit conditioning inputs:
-          - cond_dynamic: Tensor[B, seq_len, dyn_dim]
-          - cond_static: Tensor[B, static_dim]
-
-        If cond (original flattened cond) is passed, it behaves exactly as before.
-
-        The parameters `dyn_dim` and `static_dim` are optional and are used to
-        create an adapter that maps concatenated [dyn_mean + static] --> cond_length if needed.
-        """
         super().__init__()
         self.target_dim = target_dim
         self.cond_length = cond_length
         self.dyn_dim = dyn_dim
         self.static_dim = static_dim
 
+        # FIX: Remove padding=2, padding_mode="circular"
         self.input_projection = nn.Conv1d(
-            1, residual_channels, 1, padding=2, padding_mode="circular"
+            1, residual_channels, 1
         )
+        
         self.diffusion_embedding = DiffusionEmbedding(
             time_emb_dim, proj_dim=residual_hidden
         )
         self.cond_upsampler = CondUpsampler(
             cond_length=cond_length, target_dim=target_dim
         )
+
 
         # if explicit conditioning dims are provided and they don't match cond_length,
         # create an adapter to map concatenated [dyn_mean + static] --> cond_length
