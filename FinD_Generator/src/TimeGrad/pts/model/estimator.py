@@ -16,9 +16,9 @@ from gluonts.torch.model.predictor import PyTorchPredictor
 from gluonts.transform import SelectFields, Transformation
 from gluonts.itertools import maybe_len
 
-from pts import Trainer
-from pts.model import get_module_forward_input_names
-from pts.dataset.loader import TransformedIterableDataset
+from src.TimeGrad.pts.trainer import Trainer
+from src.TimeGrad.pts.model import get_module_forward_input_names
+from src.TimeGrad.pts.dataset.loader import TransformedIterableDataset
 
 
 class TrainOutput(NamedTuple):

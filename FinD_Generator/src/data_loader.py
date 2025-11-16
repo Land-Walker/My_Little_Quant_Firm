@@ -754,40 +754,55 @@ class TimeGradDataModule:
         return target_cols, cond_cols
 
     def get_feature_columns_by_type(self) -> Dict[str, List[str]]:
-        """Returns a dictionary of column names for each dataset type."""
+        """
+        Returns a dictionary of column names for each dataset type.
+        
+        CRITICAL FIX: TimeGrad expects UNIVARIATE target (1D array).
+        - Use only ONE target variable (e.g., primary PCA component or close price)
+        - Move all other features to conditioning variables
+        """
         df = self.train_transformed_full if hasattr(self, 'train_transformed_full') else self.merged_raw
 
-        target_cols = [c for c in df.columns if c.startswith('target_pca_')]
+        # Use primary PCA component (captures most variance)
+        if 'target_pca_1' in df.columns:
+            target_cols = ['target_pca_1']
+        # Option B: Fall back to denoised close price if PCA not available
+        elif 'close_den' in df.columns:
+            target_cols = ['close_den']
+        else:
+            raise ValueError("No suitable target column found. Need 'target_pca_1' or 'close_den'")
 
+        print(f"[Feature Selection] Target variable: {target_cols[0]}")
+
+        # All other features become conditioning variables
         daily_cols = [c for c in df.columns if c.startswith('market_pca_') or c.startswith('daily_')]
+        
+        # Add remaining target PCA components as conditioning (if using PCA approach)
+        target_pca_cond = [c for c in df.columns if c.startswith('target_pca_') and c not in target_cols]
+        daily_cols.extend(target_pca_cond)
+        print(f"📊 [Feature Selection] Added {len(target_pca_cond)} additional target PCA components as conditioning")
+        
         if 'volume_scaled' in df.columns:
             daily_cols.append('volume_scaled')
 
         calendar_cols = [
-            'day_of_week',
-            'month',
-            'quarter',
-            'year',
-            'is_month_end',
-            'is_quarter_end',
-            'month_sin',
-            'month_cos',
-            'dow_sin',
-            'dow_cos',
-            'quarter_sin',
-            'quarter_cos'
+            'day_of_week', 'month', 'quarter', 'year',
+            'is_month_end', 'is_quarter_end',
+            'month_sin', 'month_cos', 'dow_sin', 'dow_cos',
+            'quarter_sin', 'quarter_cos'
         ]
         daily_cols.extend([c for c in calendar_cols if c in df.columns])
 
         monthly_cols = [c for c in df.columns if c.startswith('monthly_pca_') or c.startswith('quarterly_pca_')]
-
         regime_cols = [c for c in df.columns if c.startswith(('market_regime_', 'vol_regime_', 'macro_regime_'))]
 
+        print(f"✅ [Feature Selection] Target: {len(target_cols)}, Daily: {len(daily_cols)}, Monthly: {len(monthly_cols)}, Regime: {len(regime_cols)}")
+
         return {
-            "target": target_cols,
-            "daily": daily_cols,
-            "monthly": monthly_cols,
-            "regime": regime_cols
+            "target": target_cols,     # Now exactly 1 column
+            "daily": daily_cols,       # Contains market, volume, calendar, and extra target PCA
+            "monthly": monthly_cols,   # Monthly/quarterly macro
+            "regime": regime_cols      # Market/volatility/macro regimes
         }
 
     def build_datasets(self) -> Tuple[Dataset, Dataset, Dataset]:

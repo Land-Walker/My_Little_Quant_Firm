@@ -22,7 +22,7 @@ from torch.distributions import (
     Poisson,
 )
 
-from pts.distributions import (
+from src.TimeGrad.pts.distributions import (
     ZeroInflatedPoisson,
     ZeroInflatedNegativeBinomial,
     PiecewiseLinear,
@@ -35,7 +35,7 @@ from gluonts.torch.distributions.distribution_output import DistributionOutput
 from gluonts.torch.modules.lambda_layer import LambdaLayer
 from gluonts.torch.distributions.output import PtArgProj
 
-from pts.modules.iqn_modules import ImplicitQuantileModule
+from src.TimeGrad.pts.modules.iqn_modules import ImplicitQuantileModule
 
 
 class IndependentDistributionOutput(DistributionOutput):

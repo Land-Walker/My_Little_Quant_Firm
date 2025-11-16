@@ -1,5 +1,6 @@
 import os
 
+from gluonts.time_feature import time_features_from_frequency_str
 # ===============================
 # Configuration
 # ===============================
@@ -44,3 +45,22 @@ DEFAULT_HORIZON = 5
 DEFAULT_BATCH = 32
 TRAIN_RATIO = 0.7
 VAL_RATIO = 0.15
+
+# ===============================
+# Model Configuration
+# ===============================
+MODEL_DIR = "FinD_Generator/models"
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# --- TimeGrad/GluonTS Parameters ---
+FREQ = "B"  # Business day frequency
+
+# Based on data_loader.py defaults
+CONTEXT_LENGTH = DEFAULT_SEQ_LEN      # History length for the model
+PREDICTION_LENGTH = DEFAULT_HORIZON # Forecast horizon
+
+# The number of features in your target time series (e.g., 4 PCA components from OHLC)
+TARGET_DIM = 4
+
+LAGS_SEQ = [1, 2, 3, 4, 5, 6, 7, 30, 60, 90]
+TIME_FEATURES = time_features_from_frequency_str(FREQ)
