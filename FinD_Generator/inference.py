@@ -4,7 +4,7 @@ inference.py
 Load a trained ConditionalTimeGrad model and generate forecasts.
 
 Usage:
-    python inference.py --checkpoint checkpoints/best_model.pt --sample_idx 10
+    python /workspaces/My_Little_Quant_Firm/FinD_Generator/inference.py --checkpoint checkpoints/best_model.pt --sample_idx 10
 """
 
 import sys
@@ -35,6 +35,32 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default='plots',
                         help='Directory to save output plots')
     return parser.parse_args()
+
+
+def inverse_transform_single_feature(scaler, array_1d, feature_idx=0):
+    """
+    Inverse transforms a single-feature array using a multi-feature scaler.
+
+    Args:
+        scaler: The scikit-learn scaler object (already fitted).
+        array_1d (np.ndarray): The 1D or (n, 1) array for the single feature.
+        feature_idx (int): The column index of this feature in the original data.
+
+    Returns:
+        np.ndarray: The inverse-transformed single-feature array.
+    """
+    # Create a dummy array with the shape the scaler expects
+    num_features = scaler.n_features_in_
+    dummy_array = np.zeros((len(array_1d), num_features))
+
+    # Place the single-feature data into the correct column
+    dummy_array[:, feature_idx] = array_1d.flatten()
+
+    # Inverse transform the full array
+    transformed_full = scaler.inverse_transform(dummy_array)
+
+    # Extract and return only the feature we care about
+    return transformed_full[:, feature_idx].reshape(-1, 1)
 
 
 def main():
@@ -110,16 +136,19 @@ def main():
 
     # 5. Inverse Transform to Original Price Space
     print("🔄 Inverse transforming data for plotting...")
-    # Inverse transform predictions
-    for key, arr in predictions.items():
-        predictions[key] = dm.inverse_transform_target(arr)
-
-    # Inverse transform ground truth and history
-    x_future_true = dm.inverse_transform_target(x_future_true_scaled)
-    x_hist = dm.inverse_transform_target(x_hist_scaled)
+    # dm.scalers is a dict mapping asset names to scalers. We'll use the first one.
+    scaler = list(dm.scalers.values())[0]
 
     # We only plot the first feature (e.g., 'close_den')
     plot_feature_idx = 0
+
+    # Inverse transform predictions
+    for key, arr in predictions.items():
+        predictions[key] = inverse_transform_single_feature(scaler, arr, plot_feature_idx)
+
+    # Inverse transform ground truth and history
+    x_future_true = inverse_transform_single_feature(scaler, x_future_true_scaled, plot_feature_idx)
+    x_hist = inverse_transform_single_feature(scaler, x_hist_scaled, plot_feature_idx)
 
     # 6. Plot Results
     print("🎨 Generating plot...")
