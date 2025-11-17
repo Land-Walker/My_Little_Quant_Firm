@@ -159,13 +159,15 @@ class ConditionalTimeGrad(nn.Module):
         if x_future.dim() == 2:
             x_future = x_future.unsqueeze(-1)  # (batch, horizon, 1)
 
+        # Transpose for diffusion model: (batch, horizon, 1) -> (batch, 1, horizon)
+        x_future = x_future.transpose(1, 2)
+
         # Expand conditioning to match time dimension of x_future
         # GaussianDiffusion.log_prob expects cond to have same time dim as x
-        batch_size, horizon, _ = x_future.shape
-        cond = cond.expand(batch_size, horizon, -1)  # (batch, horizon, cond_length)
+        batch_size, _, horizon = x_future.shape
+        cond = cond.expand(batch_size, horizon, -1)  # (batch, horizon, cond_length) -> This is handled inside log_prob
         
         # Compute diffusion loss (log probability)
-        # Note: diffusion.log_prob returns negative loss, so we negate
         loss = self.diffusion.log_prob(x_future, cond)
         
         return -loss.mean()  # Return positive loss for minimization
@@ -187,18 +189,21 @@ class ConditionalTimeGrad(nn.Module):
         # Prepare conditioning
         cond = self.prepare_conditioning(cond_dynamic, cond_static)
         
-        batch_size = cond.shape[0]
+        # Expand conditioning vector to generate num_samples in parallel
+        # Shape: (batch * num_samples, 1, cond_length)
+        cond = cond.repeat_interleave(num_samples, dim=0)
         
         # Generate samples from the diffusion model
-        # The diffusion.sample expects shape (batch, seq_len, target_dim)
-        samples = []
-        for _ in range(num_samples):
-            # Sample one trajectory per iteration
-            sample = self.diffusion.sample(cond=cond)  # (batch, horizon, 1)
-            samples.append(sample.unsqueeze(1))  # (batch, 1, horizon, 1)
+        # The diffusion.sample method can generate multiple samples per batch item
+        # if the conditioning tensor is properly expanded.
+        # It will return shape (batch * num_samples, 1, horizon)
+        samples = self.diffusion.sample(cond=cond, horizon=horizon)
         
-        samples = torch.cat(samples, dim=1)  # (batch, num_samples, horizon, 1)
-        
+        # Reshape to (batch, num_samples, horizon, 1)
+        batch_size = cond_dynamic.shape[0]
+        # Reshape and transpose: (batch * num_samples, 1, horizon) -> (batch, num_samples, 1, horizon) -> (batch, num_samples, horizon, 1)
+        samples = samples.view(batch_size, num_samples, self.target_dim, horizon)
+        samples = samples.transpose(2, 3)
         return samples
     
     def predict(self, cond_dynamic, cond_static, num_samples=100, return_quantiles=True):
@@ -217,7 +222,8 @@ class ConditionalTimeGrad(nn.Module):
             Else:
                 samples: (batch, num_samples, horizon, 1)
         """
-        samples = self.sample(cond_dynamic, cond_static, num_samples)
+        horizon = 5 # Default horizon, consider making this an argument
+        samples = self.sample(cond_dynamic, cond_static, num_samples, horizon=horizon)
         
         if not return_quantiles:
             return samples

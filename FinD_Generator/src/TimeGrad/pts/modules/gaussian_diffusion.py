@@ -200,13 +200,13 @@ class GaussianDiffusion(nn.Module):
         return img
 
     @torch.no_grad()
-    def sample(self, sample_shape=torch.Size(), cond=None):
+    def sample(self, sample_shape=torch.Size(), cond=None, horizon=None):
         if cond is not None:
-            shape = cond.shape[:-1] + (self.input_size,)
-            # TODO reshape cond to (B*T, 1, -1)
+            # Shape for p_sample_loop should be (batch, num_features, horizon)
+            shape = (cond.shape[0], self.input_size, horizon)
         else:
             shape = sample_shape
-        x_hat = self.p_sample_loop(shape, cond)  # TODO reshape x_hat to (B,T,-1)
+        x_hat = self.p_sample_loop(shape, cond)
 
         if self.scale is not None:
             x_hat *= self.scale
@@ -259,11 +259,15 @@ class GaussianDiffusion(nn.Module):
         if self.scale is not None:
             x /= self.scale
 
-        B, T, _ = x.shape
+        # x is expected to be (B, C, T) where C is target_dim
+        B, C, T = x.shape
+        if C != self.input_size:
+            raise ValueError("Input channel dimension does not match target_dim")
 
-        time = torch.randint(0, self.num_timesteps, (B * T,), device=x.device).long()
+        time = torch.randint(0, self.num_timesteps, (B,), device=x.device).long()
+        cond = cond.squeeze(1) # From (B, 1, cond_length) to (B, cond_length)
         loss = self.p_losses(
-            x.reshape(B * T, 1, -1), cond.reshape(B * T, 1, -1), time, *args, **kwargs
+            x, cond, time, *args, **kwargs
         )
 
         return loss

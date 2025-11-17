@@ -180,21 +180,17 @@ class EpsilonTheta(nn.Module):
         """
         Extended forward:
 
-        - inputs: [B, 1, L] or [B, L] depending on calling convention (we expect [B, 1, L])
+        - inputs: [B, 1, L] or [B, L] depending on calling convention
         - time: tensor of step indices [B] (or scalar)
         - cond: original-style cond (legacy) shape [B, cond_length]; if provided, used as-is
         - cond_dynamic: explicit dynamic cond [B, seq_len, dyn_dim]
         - cond_static: explicit static cond [B, static_dim]
-
-        Behavior:
-          * If `cond` is provided (legacy), we use it (backwards compatibility).
-          * Else, if `cond_dynamic`/`cond_static` provided, we build a per-sample cond vector,
-            adapt it to cond_length (if needed) and use it.
         """
-        # inputs expected shape for input_projection conv1d: [B, 1, L]
-        # if user passed [B, L], make it [B, 1, L]
+        # Ensure inputs is [B, 1, L]
         if inputs.dim() == 2:
             inputs = inputs.unsqueeze(1)
+        elif inputs.dim() == 4:  # FIX: Handle over-squeezed input [B, 1, 1, L]
+            inputs = inputs.squeeze(1)  # Remove extra dimension
 
         x = self.input_projection(inputs)
         x = F.leaky_relu(x, 0.4)
@@ -211,10 +207,20 @@ class EpsilonTheta(nn.Module):
             # fallback: zeros
             cond_vec = torch.zeros((x.size(0), self.cond_length), device=x.device, dtype=x.dtype)
 
+        # FIX: Handle case where cond_vec might already be 3D [B, 1, cond_length]
+        if cond_vec.dim() == 3:
+            cond_vec = cond_vec.squeeze(1)  # [B, cond_length]
+
         # cond_vec -> cond_up [B, target_dim]
         cond_up = self.cond_upsampler(cond_vec)
-        # cond_up expected by conditioner_projection Conv1d: [B, 1, target_dim]
-        cond_up = cond_up.unsqueeze(1)
+        
+        # FIX: Check dimensionality before unsqueezing
+        # cond_up should be [B, target_dim], we need [B, 1, target_dim] for Conv1d
+        if cond_up.dim() == 2:
+            cond_up = cond_up.unsqueeze(1)  # [B, 1, target_dim]
+        elif cond_up.dim() == 3 and cond_up.size(1) != 1:
+            # If it's [B, target_dim, 1], transpose to [B, 1, target_dim]
+            cond_up = cond_up.transpose(1, 2)
 
         skip = []
         for layer in self.residual_layers:
