@@ -11,6 +11,7 @@ import sys
 sys.path.append('FinD_Generator')
 
 import argparse
+import os
 import torch
 from torch.optim import Adam
 from torch.optim.lr_scheduler import OneCycleLR
@@ -20,7 +21,6 @@ import numpy as np
 from src.data_collector import DataCollector
 from src.data_loader import TimeGradDataModule
 from src.models import create_conditional_timegrad
-from src.training import ConditionalTimeGradTrainer, CheckpointCallback
 from src import config
 
 
@@ -225,6 +225,9 @@ def main():
     # 4. Training loop
     # ===========================================
     print(f"\n🚀 Starting training for {args.epochs} epochs...")
+    
+    # Ensure checkpoint directory exists
+    os.makedirs(args.save_dir, exist_ok=True)
     
     best_val_loss = float('inf')
     
