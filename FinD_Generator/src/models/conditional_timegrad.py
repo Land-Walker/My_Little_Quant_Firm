@@ -168,9 +168,11 @@ class ConditionalTimeGrad(nn.Module):
         cond = cond.expand(batch_size, horizon, -1)  # (batch, horizon, cond_length) -> This is handled inside log_prob
         
         # Compute diffusion loss (log probability)
+        # The `log_prob` method in this implementation actually returns the MSE loss,
+        # which is a positive value that should be minimized.
         loss = self.diffusion.log_prob(x_future, cond)
         
-        return -loss.mean()  # Return positive loss for minimization
+        return loss # The loss is already a scalar tensor to be minimized.
     
     @torch.no_grad()
     def sample(self, cond_dynamic, cond_static, num_samples=100, horizon=5):
