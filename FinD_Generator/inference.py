@@ -32,7 +32,7 @@ def parse_args():
                         help='Number of Monte Carlo samples for prediction')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device to use (cuda/cpu)')
-    parser.add_argument('--output_dir', type=str, default='/FinD_Generator/image/graph',
+    parser.add_argument('--output_dir', type=str, default='FinD_Generator/image/graph',
                         help='Directory to save output plots')
     return parser.parse_args()
 
@@ -159,21 +159,36 @@ def main():
     future_range = np.arange(0, len(x_future_true))
 
     # Plot history
-    ax.plot(hist_range, x_hist[:, plot_feature_idx], color='gray', label='Historical Data')
+    ax.plot(hist_range, x_hist.flatten(), color='gray', label='Historical Data')
 
     # Plot ground truth
-    ax.plot(future_range, x_future_true[:, plot_feature_idx], color='black', lw=2, label='Ground Truth')
+    ax.plot(future_range, x_future_true.flatten(), color='black', lw=2, label='Ground Truth')
 
     # Plot mean forecast
-    ax.plot(future_range, predictions['mean'][:, plot_feature_idx], color='blue', lw=2, label='Mean Forecast')
+    ax.plot(future_range, predictions['mean'].flatten(), color='blue', lw=2, label='Mean Forecast')
 
     # Plot uncertainty interval (quantiles)
-    ax.fill_between(future_range, predictions['q10'][:, plot_feature_idx], predictions['q90'][:, plot_feature_idx],
+    ax.fill_between(future_range, predictions['q10'].flatten(), predictions['q90'].flatten(),
                     color='blue', alpha=0.2, label='10%-90% Quantile Range')
+
+    # Calculate dynamic y-axis limits for better visibility
+    all_plotted_values = np.concatenate([
+        x_hist.flatten(),
+        x_future_true.flatten(),
+        predictions['mean'].flatten(),
+        predictions['q10'].flatten(),
+        predictions['q90'].flatten()
+    ])
+
+    min_val = np.min(all_plotted_values)
+    max_val = np.max(all_plotted_values)
+    # Add a small buffer for better visualization, ensuring it's not zero if min_val == max_val
+    padding = (max_val - min_val) * 0.1 if (max_val - min_val) > 0 else 0.5
+    ax.set_ylim(min_val - padding, max_val + padding)
 
     ax.set_title(f'Forecast vs. Ground Truth (Sample {args.sample_idx})')
     ax.set_xlabel('Time Steps (from forecast point)')
-    ax.set_ylabel('Denoised Price (Inverse Transformed)')
+    ax.set_ylabel('Price (Inverse Transformed)')
     ax.legend()
     ax.axvline(0, color='r', linestyle='--', lw=1)
 
