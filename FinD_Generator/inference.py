@@ -14,6 +14,7 @@ import argparse
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import json
 import os
 
 from src.data_loader import TimeGradDataModule
@@ -32,6 +33,8 @@ def parse_args():
                         help='Number of Monte Carlo samples for prediction')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device to use (cuda/cpu)')
+    parser.add_argument('--scenario', type=str, default=None,
+                        help='Path to a JSON file defining a custom scenario for conditioning features')
     parser.add_argument('--output_dir', type=str, default='FinD_Generator/image/graph',
                         help='Directory to save output plots')
     return parser.parse_args()
@@ -88,6 +91,11 @@ def main():
 
     val_loader = dm.val_dataloader()
     print(f"✅ Data pipeline loaded. Validation set has {len(dm.val_set)} samples.")
+    
+    # Print available features for scenario creation
+    print("\n✨ Available features for scenarios:")
+    print(f"  Dynamic Features: {dm.cond_dynamic_cols}")
+    print(f"  Static Features (Regimes): {dm.cond_static_cols}")
 
     # 2. Load Model
     print(f"\n🏗️ Loading model from {args.checkpoint}...")
@@ -116,9 +124,56 @@ def main():
     for _ in range(args.sample_idx + 1):
         inference_batch = next(val_iterator)
 
-    print(f"\n🔍 Running inference on sample index {args.sample_idx}...")
+    # 4. Handle Scenario Override if provided
+    scenario_name = "Ground Truth"
+    if args.scenario:
+        print(f"\n🔄 Loading custom scenario from {args.scenario}...")
+        with open(args.scenario, 'r') as f:
+            scenario_data = json.load(f)
+        
+        scenario_name = scenario_data.get("name", "Custom Scenario")
+        
+        # Override Dynamic Features
+        if "dynamic_overrides" in scenario_data:
+            print("  -> Applying dynamic feature overrides...")
+            cond_dynamic_tensor = inference_batch['cond_dynamic']
+            for feature_name, value in scenario_data["dynamic_overrides"].items():
+                if feature_name in dm.cond_dynamic_cols:
+                    idx = dm.cond_dynamic_cols.index(feature_name)
+                    print(f"    - Overriding '{feature_name}' (index {idx}).")
+                    if isinstance(value, list):
+                        new_values = torch.tensor(value, dtype=cond_dynamic_tensor.dtype, device=device)
+                    else:
+                        new_values = torch.full((cond_dynamic_tensor.shape[1],), fill_value=value, dtype=cond_dynamic_tensor.dtype, device=device)
+                    cond_dynamic_tensor[0, :, idx] = new_values
+                else:
+                    print(f"    - WARNING: Dynamic feature '{feature_name}' not found. Skipping.")
 
-    # 4. Generate Forecast
+        # Override Static Features (Regimes)
+        if "static_overrides" in scenario_data:
+            print("  -> Applying static feature overrides...")
+            cond_static_tensor = inference_batch['cond_static']
+            # Create a mutable copy to modify
+            new_static_values = cond_static_tensor.clone().squeeze(0)
+            
+            # First, set all regime values to 0 (off)
+            new_static_values.fill_(0)
+            
+            for feature_name, value in scenario_data["static_overrides"].items():
+                 if feature_name in dm.cond_static_cols:
+                    idx = dm.cond_static_cols.index(feature_name)
+                    print(f"    - Setting '{feature_name}' (index {idx}) to {value}.")
+                    new_static_values[idx] = float(value) # Ensure it's a float
+                 else:
+                    print(f"    - WARNING: Static feature '{feature_name}' not found. Skipping.")
+            # Assign the modified tensor back
+            inference_batch['cond_static'] = new_static_values.unsqueeze(0)
+
+        print("✅ Scenario applied.")
+
+    print(f"\n🔍 Running inference for '{scenario_name}' (using base sample {args.sample_idx})...")
+
+    # 5. Generate Forecast
     with torch.no_grad():
         predictions = model.predict(
             cond_dynamic=inference_batch['cond_dynamic'],
@@ -134,7 +189,7 @@ def main():
     x_future_true_scaled = inference_batch['x_future'].squeeze(0).cpu().numpy()
     x_hist_scaled = inference_batch['x_hist'].squeeze(0).cpu().numpy()
 
-    # 5. Inverse Transform to Original Price Space
+    # 6. Inverse Transform to Original Price Space
     print("🔄 Inverse transforming data for plotting...")
     # dm.scalers is a dict mapping asset names to scalers. We'll use the first one.
     scaler = list(dm.scalers.values())[0]
@@ -150,7 +205,7 @@ def main():
     x_future_true = inverse_transform_single_feature(scaler, x_future_true_scaled, plot_feature_idx)
     x_hist = inverse_transform_single_feature(scaler, x_hist_scaled, plot_feature_idx)
 
-    # 6. Plot Results
+    # 7. Plot Results
     print("🎨 Generating plot...")
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -161,8 +216,9 @@ def main():
     # Plot history
     ax.plot(hist_range, x_hist.flatten(), color='gray', label='Historical Data')
 
-    # Plot ground truth
-    ax.plot(future_range, x_future_true.flatten(), color='black', lw=2, label='Ground Truth')
+    # Only plot ground truth if not running a custom scenario
+    if not args.scenario:
+        ax.plot(future_range, x_future_true.flatten(), color='black', lw=2, label='Ground Truth')
 
     # Plot mean forecast
     ax.plot(future_range, predictions['mean'].flatten(), color='blue', lw=2, label='Mean Forecast')
@@ -186,13 +242,14 @@ def main():
     padding = (max_val - min_val) * 0.1 if (max_val - min_val) > 0 else 0.5
     ax.set_ylim(min_val - padding, max_val + padding)
 
-    ax.set_title(f'Forecast vs. Ground Truth (Sample {args.sample_idx})')
+    ax.set_title(f"Forecast for '{scenario_name}' (Base Sample: {args.sample_idx})")
     ax.set_xlabel('Time Steps (from forecast point)')
     ax.set_ylabel('Price (Inverse Transformed)')
     ax.legend()
     ax.axvline(0, color='r', linestyle='--', lw=1)
 
-    output_path = os.path.join(args.output_dir, f'forecast_sample_{args.sample_idx}.png')
+    fname = f'scenario_{os.path.basename(args.scenario).replace(".json", "")}.png' if args.scenario else f'forecast_sample_{args.sample_idx}.png'
+    output_path = os.path.join(args.output_dir, fname)
     plt.savefig(output_path, dpi=300)
     print(f"✅ Plot saved to {output_path}")
 

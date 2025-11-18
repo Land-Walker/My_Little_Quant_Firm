@@ -392,6 +392,10 @@ class TimeGradDataModule:
         self.train_transformed, self.val_transformed, self.test_transformed = {}, {}, {}
 
         # Align all macro data safely (avoids leakage)
+        # Placeholders for feature column names
+        self._cond_dynamic_cols = []
+        self._cond_static_cols = []
+
         # Store the aligned macro data back into the data_dict
         print("🔧 [Init] Aligning and preparing macroeconomic data...")
         self.data["quarterly_macro_aligned"], self.data["monthly_macro_aligned"], self.data["daily_macro_aligned"] = align_and_handle_missing_values(
@@ -817,9 +821,24 @@ class TimeGradDataModule:
                                                   seq_len=self.seq_len, forecast_horizon=self.forecast_horizon, device=self.device)
         self.test_set = ConditionalTimeGradDataset(self.test_transformed_full, feature_cols,
                                                    seq_len=self.seq_len, forecast_horizon=self.forecast_horizon, device=self.device)
+        # Store the column names for external access
+        self._cond_dynamic_cols = feature_cols["daily"] + feature_cols["monthly"]
+        self._cond_static_cols = feature_cols["regime"]
 
         print(f"✅ Datasets built. Train: {len(self.train_set)}, Val: {len(self.val_set)}, Test: {len(self.test_set)} samples.")
         return self.train_set, self.val_set, self.test_set
+
+    @property
+    def cond_dynamic_cols(self) -> List[str]:
+        if not self._cond_dynamic_cols:
+            print("Warning: cond_dynamic_cols accessed before build_datasets() was called.")
+        return self._cond_dynamic_cols
+
+    @property
+    def cond_static_cols(self) -> List[str]:
+        if not self._cond_static_cols:
+            print("Warning: cond_static_cols accessed before build_datasets() was called.")
+        return self._cond_static_cols
 
     def train_dataloader(self):
         return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True)
@@ -829,6 +848,22 @@ class TimeGradDataModule:
 
     def test_dataloader(self):
         return DataLoader(self.test_set, batch_size=self.batch_size, shuffle=False)
+
+    def build_datasets(self) -> Tuple[Dataset, Dataset, Dataset]:
+        if not hasattr(self, 'train_transformed_full'):
+            raise RuntimeError("Call fit_transform_train(...) before build_datasets()")
+
+        feature_cols = self.get_feature_columns_by_type()
+
+        self.train_set = ConditionalTimeGradDataset(self.train_transformed_full, feature_cols,
+                                                    seq_len=self.seq_len, forecast_horizon=self.forecast_horizon, device=self.device)
+        self.val_set = ConditionalTimeGradDataset(self.val_transformed_full, feature_cols,
+                                                  seq_len=self.seq_len, forecast_horizon=self.forecast_horizon, device=self.device)
+        self.test_set = ConditionalTimeGradDataset(self.test_transformed_full, feature_cols,
+                                                   seq_len=self.seq_len, forecast_horizon=self.forecast_horizon, device=self.device)
+
+        print(f"✅ Datasets built. Train: {len(self.train_set)}, Val: {len(self.val_set)}, Test: {len(self.test_set)} samples.")
+        return self.train_set, self.val_set, self.test_set
 
 # =========================================================
 # 5. PyTorch Datasets
