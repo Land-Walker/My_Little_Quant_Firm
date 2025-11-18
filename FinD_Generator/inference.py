@@ -4,7 +4,7 @@ inference.py
 Load a trained ConditionalTimeGrad model and generate forecasts.
 
 Usage:
-    python /workspaces/My_Little_Quant_Firm/FinD_Generator/inference.py --checkpoint checkpoints/best_model.pt --sample_idx 10
+    python /workspaces/My_Little_Quant_Firm/FinD_Generator/inference.py --checkpoint checkpoints/best_model.pt --sample_idx 30
 """
 
 import sys
@@ -15,6 +15,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import json
+import properscoring as ps
 import os
 
 from src.data_loader import TimeGradDataModule
@@ -40,30 +41,33 @@ def parse_args():
     return parser.parse_args()
 
 
-def inverse_transform_single_feature(scaler, array_1d, feature_idx=0):
+def inverse_transform_single_feature(scaler, data_array, feature_idx=0):
     """
-    Inverse transforms a single-feature array using a multi-feature scaler.
+    Inverse transforms a single-feature array (1D or 2D) using a multi-feature scaler.
 
     Args:
         scaler: The scikit-learn scaler object (already fitted).
-        array_1d (np.ndarray): The 1D or (n, 1) array for the single feature.
+        data_array (np.ndarray): The array for the single feature. Can be 1D or 2D.
         feature_idx (int): The column index of this feature in the original data.
 
     Returns:
         np.ndarray: The inverse-transformed single-feature array.
     """
+    original_shape = data_array.shape
+    data_flat = data_array.flatten()
+
     # Create a dummy array with the shape the scaler expects
     num_features = scaler.n_features_in_
-    dummy_array = np.zeros((len(array_1d), num_features))
+    dummy_array = np.zeros((len(data_flat), num_features))
 
     # Place the single-feature data into the correct column
-    dummy_array[:, feature_idx] = array_1d.flatten()
+    dummy_array[:, feature_idx] = data_flat
 
     # Inverse transform the full array
     transformed_full = scaler.inverse_transform(dummy_array)
 
     # Extract and return only the feature we care about
-    return transformed_full[:, feature_idx].reshape(-1, 1)
+    return transformed_full[:, feature_idx].reshape(original_shape)
 
 
 def main():
@@ -108,6 +112,7 @@ def main():
 
     model = create_conditional_timegrad(
         cond_dynamic_dim=cond_dynamic_dim,
+        forecast_horizon=dm.forecast_horizon,
         cond_static_dim=cond_static_dim,
     ).to(device)
 
@@ -178,12 +183,13 @@ def main():
         predictions = model.predict(
             cond_dynamic=inference_batch['cond_dynamic'],
             cond_static=inference_batch['cond_static'],
-            num_samples=args.num_samples
+            num_samples=args.num_samples,
+            return_raw_samples=True  # Request the raw samples for CRPS
         )
 
     # Move predictions to CPU and convert to numpy
-    for key, tensor in predictions.items():
-        predictions[key] = tensor.squeeze(0).cpu().numpy()
+    for key in ['mean', 'q10', 'q90', 'raw_samples']:
+        predictions[key] = predictions[key].squeeze(0).cpu().numpy()
 
     # Get ground truth and historical data
     x_future_true_scaled = inference_batch['x_future'].squeeze(0).cpu().numpy()
@@ -198,8 +204,9 @@ def main():
     plot_feature_idx = 0
 
     # Inverse transform predictions
-    for key, arr in predictions.items():
-        predictions[key] = inverse_transform_single_feature(scaler, arr, plot_feature_idx)
+    for key in ['mean', 'q10', 'q90']:
+        predictions[key] = inverse_transform_single_feature(scaler, predictions[key], plot_feature_idx)
+    predictions['raw_samples'] = inverse_transform_single_feature(scaler, predictions['raw_samples'], plot_feature_idx)
 
     # Inverse transform ground truth and history
     x_future_true = inverse_transform_single_feature(scaler, x_future_true_scaled, plot_feature_idx)
@@ -222,6 +229,16 @@ def main():
 
     # Plot mean forecast
     ax.plot(future_range, predictions['mean'].flatten(), color='blue', lw=2, label='Mean Forecast')
+
+    # 8. Calculate and Display CRPS
+    # CRPS is calculated only if we are not in a hypothetical scenario
+    if not args.scenario:
+        # crps_ensemble expects observations and forecasts with shape (time, samples)
+        # Our raw_samples are (horizon, num_samples), e.g., (5, 200).
+        # Our x_future_true is (horizon, 1), e.g., (5, 1).
+        # We must squeeze x_future_true to (horizon,) for compatibility.
+        crps_score = ps.crps_ensemble(x_future_true.squeeze(), predictions['raw_samples']).mean()
+        ax.text(0.02, 0.95, f'CRPS: {crps_score:.4f}', transform=ax.transAxes, fontsize=12, verticalalignment='top', bbox=dict(boxstyle='round,pad=0.5', fc='wheat', alpha=0.5))
 
     # Plot uncertainty interval (quantiles)
     ax.fill_between(future_range, predictions['q10'].flatten(), predictions['q90'].flatten(),

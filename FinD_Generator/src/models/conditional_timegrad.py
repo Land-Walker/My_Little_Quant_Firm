@@ -10,7 +10,7 @@ Author: Wooseok Lee
 
 import torch
 import torch.nn as nn
-from typing import Optional
+from typing import Dict
 
 # Import from your PTS library
 import sys
@@ -32,6 +32,7 @@ class ConditionalTimeGrad(nn.Module):
         self,
         target_dim: int = 1,
         cond_dynamic_dim: int = 50,
+        forecast_horizon: int = 5,
         cond_static_dim: int = 10,
         diff_steps: int = 100,
         beta_end: float = 0.1,
@@ -46,6 +47,7 @@ class ConditionalTimeGrad(nn.Module):
         Args:
             target_dim: Dimension of target variable (1 for univariate)
             cond_dynamic_dim: Number of dynamic conditioning features
+            forecast_horizon: The length of the forecast sequence.
             cond_static_dim: Number of static conditioning features
             diff_steps: Number of diffusion steps
             beta_end: Final beta value for diffusion schedule
@@ -60,6 +62,7 @@ class ConditionalTimeGrad(nn.Module):
         
         self.target_dim = target_dim
         self.cond_dynamic_dim = cond_dynamic_dim
+        self.forecast_horizon = forecast_horizon
         self.cond_static_dim = cond_static_dim
         
         # Conditioning length for epsilon_theta
@@ -207,43 +210,46 @@ class ConditionalTimeGrad(nn.Module):
         samples = samples.view(batch_size, num_samples, self.target_dim, horizon)
         samples = samples.transpose(2, 3)
         return samples
-    
-    def predict(self, cond_dynamic, cond_static, num_samples=100, return_quantiles=True):
+
+    def predict(
+        self,
+        cond_dynamic: torch.Tensor,
+        cond_static: torch.Tensor,
+        num_samples: int, # Renamed from num_samples to align with sample method
+        return_raw_samples: bool = False
+    ) -> Dict[str, torch.Tensor]:
         """
-        High-level prediction interface.
-        
-        Args:
-            cond_dynamic: Dynamic features (batch, seq_len, n_features)
-            cond_static: Static features (batch, n_features)
-            num_samples: Number of Monte Carlo samples
-            return_quantiles: If True, return quantiles; else return all samples
-        
-        Returns:
-            If return_quantiles=True:
-                Dictionary with keys: 'mean', 'median', 'q10', 'q90', 'std'
-            Else:
-                samples: (batch, num_samples, horizon, 1)
+        Generate probabilistic forecasts using the trained model.
+        This method leverages the `sample` method to generate raw forecast paths
+        and then computes summary statistics (mean, quantiles).
         """
-        horizon = 5 # Default horizon, consider making this an argument
-        samples = self.sample(cond_dynamic, cond_static, num_samples, horizon=horizon)
+        # Use the model's own sample method to generate forecast paths
+        # It returns shape: (batch, num_samples, horizon, target_dim)
+        forecast_samples = self.sample(
+            cond_dynamic=cond_dynamic,
+            cond_static=cond_static,
+            num_samples=num_samples,
+            horizon=self.forecast_horizon # Use horizon stored in the model
+        )
         
-        if not return_quantiles:
-            return samples
-        
-        # Compute statistics over samples
-        samples_squeezed = samples.squeeze(-1)  # (batch, num_samples, horizon)
-        
-        predictions = {
-            'mean': samples_squeezed.mean(dim=1),      # (batch, horizon)
-            'median': samples_squeezed.median(dim=1)[0],  # (batch, horizon)
-            'std': samples_squeezed.std(dim=1),        # (batch, horizon)
-            'q10': samples_squeezed.quantile(0.1, dim=1),  # (batch, horizon)
-            'q25': samples_squeezed.quantile(0.25, dim=1),
-            'q75': samples_squeezed.quantile(0.75, dim=1),
-            'q90': samples_squeezed.quantile(0.9, dim=1),
+        # Calculate statistics
+        # The samples are (batch, num_samples, horizon, target_dim), so we aggregate over the num_samples dimension (dim=1)
+        mean_forecast = torch.mean(forecast_samples, dim=1)
+        q10 = torch.quantile(forecast_samples, q=0.1, dim=1)
+        q90 = torch.quantile(forecast_samples, q=0.9, dim=1)
+
+        output = {
+            "mean": mean_forecast,
+            "q10": q10,
+            "q90": q90,
         }
-        
-        return predictions
+        if return_raw_samples:
+            # For CRPS, we need (batch, horizon, num_samples). Current shape is (batch, num_samples, horizon, 1)
+            # So we squeeze and permute.
+            output["raw_samples"] = forecast_samples.squeeze(-1).permute(0, 2, 1)
+
+        return output
+
 
 
 # ===========================================
@@ -251,6 +257,7 @@ class ConditionalTimeGrad(nn.Module):
 # ===========================================
 def create_conditional_timegrad(
     cond_dynamic_dim: int,
+    forecast_horizon: int,
     cond_static_dim: int,
     **kwargs
 ) -> ConditionalTimeGrad:
@@ -259,6 +266,7 @@ def create_conditional_timegrad(
     
     Args:
         cond_dynamic_dim: Number of dynamic conditioning features
+        forecast_horizon: The length of the forecast sequence.
         cond_static_dim: Number of static conditioning features
         **kwargs: Additional arguments to pass to ConditionalTimeGrad
     
@@ -280,6 +288,7 @@ def create_conditional_timegrad(
     
     model = ConditionalTimeGrad(
         cond_dynamic_dim=cond_dynamic_dim,
+        forecast_horizon=forecast_horizon,
         cond_static_dim=cond_static_dim,
         **config
     )
