@@ -32,7 +32,7 @@ def parse_args():
                         help='Number of Monte Carlo samples for prediction')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device to use (cuda/cpu)')
-    parser.add_argument('--output_dir', type=str, default='plots',
+    parser.add_argument('--output_dir', type=str, default='/FinD_Generator/image/graph',
                         help='Directory to save output plots')
     return parser.parse_args()
 
