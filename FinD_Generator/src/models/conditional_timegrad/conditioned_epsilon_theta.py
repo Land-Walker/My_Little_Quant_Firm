@@ -43,6 +43,22 @@ class ConditionedEpsilonTheta(nn.Module):
             embed_dim=embed_dim, num_heads=attn_heads, batch_first=False
         )
 
+        self.rel_pos_bias = _RelativePositionBias(max_distance=max(seq_len, prediction_length))
+
+        # Convolutional upsampling followed by optional interpolation for exact alignment.
+        self.cond_upsampler = nn.Sequential(
+            nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
+            nn.LeakyReLU(0.1),
+            nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
+        )
+
+        # Lightweight learned positional alignment to mitigate lossy temporal interpolation.
+        self.pos_align = nn.Sequential(
+            nn.Conv1d(embed_dim, embed_dim, kernel_size=1),
+            nn.LeakyReLU(0.1),
+            nn.Conv1d(embed_dim, embed_dim, kernel_size=1),
+        )
+
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, cond: Optional[Dict[str, torch.Tensor]] = None
     ):
@@ -86,15 +102,39 @@ class ConditionedEpsilonTheta(nn.Module):
         query = self.query_proj(x)  # [B, embed_dim, horizon]
         query = query.permute(2, 0, 1)  # [horizon, B, embed_dim]
 
-        attn_out, _ = self.cross_attention(query, cond_tokens, cond_tokens)
+        attn_mask = self.rel_pos_bias(query_len=horizon, cond_len=cond_tokens.size(0))
+        attn_out, _ = self.cross_attention(query, cond_tokens, cond_tokens, attn_mask=attn_mask)
         attn_out = attn_out.permute(1, 2, 0)  # [B, embed_dim, horizon]
 
         # Align time dimension to the base denoiser's expected prediction length if needed.
         if horizon != self.prediction_length:
-            attn_out = F.interpolate(attn_out, size=self.prediction_length, mode="nearest")
-            x = F.interpolate(x, size=self.prediction_length, mode="nearest")
+            attn_out = self.pos_align(attn_out)
+            attn_out = self.cond_upsampler(attn_out)
+            attn_out = F.interpolate(attn_out, size=self.prediction_length, mode="linear", align_corners=False)
+            x = F.interpolate(x, size=self.prediction_length, mode="linear", align_corners=False)
 
         cond_residual = self.context_proj(attn_out)  # [B, C, horizon]
         x_cond = x + cond_residual
 
         return self.base(x_cond, t, cond=attn_out)
+
+
+class _RelativePositionBias(nn.Module):
+    """Learned relative positional bias for cross-attention."""
+
+    def __init__(self, max_distance: int) -> None:
+        super().__init__()
+        self.max_distance = max_distance
+        # Bias table indexed by clipped relative distance.
+        self.bias_table = nn.Parameter(torch.zeros(2 * max_distance - 1))
+        nn.init.normal_(self.bias_table, std=0.02)
+
+    def forward(self, query_len: int, cond_len: int) -> torch.Tensor:
+        device = self.bias_table.device
+        q_ids = torch.arange(query_len, device=device).unsqueeze(1)
+        k_ids = torch.arange(cond_len, device=device).unsqueeze(0)
+        rel = q_ids - k_ids  # [L, S]
+        rel = rel.clamp(-self.max_distance + 1, self.max_distance - 1)
+        rel_index = rel + self.max_distance - 1
+        bias = self.bias_table[rel_index]  # [L, S]
+        return bias
