@@ -1,10 +1,11 @@
 """Conditioned wrapper around the base TimeGrad epsilon network."""
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..timegrad_core.epsilon_theta import EpsilonTheta
 
@@ -42,7 +43,9 @@ class ConditionedEpsilonTheta(nn.Module):
             embed_dim=embed_dim, num_heads=attn_heads, batch_first=False
         )
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, cond: Dict[str, torch.Tensor]):
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, cond: Optional[Dict[str, torch.Tensor]] = None
+    ):
         """Forward pass with conditioning.
 
         Args:
@@ -54,8 +57,25 @@ class ConditionedEpsilonTheta(nn.Module):
 
         batch_size, _, horizon = x.shape
 
+        if cond is None:
+            # Unconditioned path for compatibility with the core diffusion APIs.
+            return self.base(x, t, cond=None)
+
+        if "dynamic" not in cond or "static" not in cond:
+            raise ValueError("cond must contain 'dynamic' and 'static' keys")
+
         dyn = cond["dynamic"]  # [B, seq_len, cond_dim]
         static = cond["static"]  # [B, static_dim]
+
+        if dyn.shape[0] != batch_size or static.shape[0] != batch_size:
+            raise ValueError(
+                "Batch size mismatch between noisy input and conditioning features"
+            )
+
+        if dyn.shape[1] != self.seq_len:
+            raise ValueError(
+                f"Expected dynamic conditioning length {self.seq_len}, got {dyn.shape[1]}"
+            )
 
         dyn_tokens = self.dynamic_encoder(dyn)  # [B, seq_len, embed_dim]
         static_token = self.static_encoder(static).unsqueeze(1)  # [B, 1, embed_dim]
@@ -68,6 +88,11 @@ class ConditionedEpsilonTheta(nn.Module):
 
         attn_out, _ = self.cross_attention(query, cond_tokens, cond_tokens)
         attn_out = attn_out.permute(1, 2, 0)  # [B, embed_dim, horizon]
+
+        # Align time dimension to the base denoiser's expected prediction length if needed.
+        if horizon != self.prediction_length:
+            attn_out = F.interpolate(attn_out, size=self.prediction_length, mode="nearest")
+            x = F.interpolate(x, size=self.prediction_length, mode="nearest")
 
         cond_residual = self.context_proj(attn_out)  # [B, C, horizon]
         x_cond = x + cond_residual
