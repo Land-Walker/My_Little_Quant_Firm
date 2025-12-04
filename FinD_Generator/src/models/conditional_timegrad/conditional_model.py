@@ -26,6 +26,7 @@ class ConditionalTimeGrad(nn.Module):
         residual_channels: int = 32,
         cond_embed_dim: int = 64,
         cond_attn_heads: int = 4,
+        cond_attn_dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
@@ -45,6 +46,7 @@ class ConditionalTimeGrad(nn.Module):
             prediction_length=prediction_length,
             embed_dim=cond_embed_dim,
             attn_heads=cond_attn_heads,
+            attn_dropout=cond_attn_dropout,
         )
 
         self.diffusion = GaussianDiffusion(

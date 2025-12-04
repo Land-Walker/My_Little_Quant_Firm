@@ -26,6 +26,7 @@ class ConditionedEpsilonTheta(nn.Module):
         prediction_length: int,
         embed_dim: int = 64,
         attn_heads: int = 4,
+        attn_dropout: float = 0.1,
     ) -> None:
         super().__init__()
 
@@ -40,7 +41,10 @@ class ConditionedEpsilonTheta(nn.Module):
         self.context_proj = nn.Conv1d(embed_dim, base_epsilon.input_size, kernel_size=1)
 
         self.cross_attention = nn.MultiheadAttention(
-            embed_dim=embed_dim, num_heads=attn_heads, batch_first=False
+            embed_dim=embed_dim,
+            num_heads=attn_heads,
+            dropout=attn_dropout,
+            batch_first=False,
         )
 
         self.rel_pos_bias = _RelativePositionBias(max_distance=max(seq_len, prediction_length))
@@ -57,6 +61,14 @@ class ConditionedEpsilonTheta(nn.Module):
             nn.Conv1d(embed_dim, embed_dim, kernel_size=1),
             nn.LeakyReLU(0.1),
             nn.Conv1d(embed_dim, embed_dim, kernel_size=1),
+        )
+
+        # FiLM modulation derived from static conditioning to rescale base inputs.
+        self.static_film = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.LeakyReLU(0.1),
+            nn.Linear(embed_dim, base_epsilon.input_size),
+            nn.Tanh(),
         )
 
     def forward(
@@ -95,6 +107,7 @@ class ConditionedEpsilonTheta(nn.Module):
 
         dyn_tokens = self.dynamic_encoder(dyn)  # [B, seq_len, embed_dim]
         static_token = self.static_encoder(static).unsqueeze(1)  # [B, 1, embed_dim]
+        static_film = self.static_film(static_token.squeeze(1))  # [B, C]
 
         cond_tokens = torch.cat([dyn_tokens, static_token], dim=1)  # [B, seq_len+1, embed_dim]
         cond_tokens = cond_tokens.transpose(0, 1)  # [cond_seq, B, embed_dim]
@@ -102,7 +115,14 @@ class ConditionedEpsilonTheta(nn.Module):
         query = self.query_proj(x)  # [B, embed_dim, horizon]
         query = query.permute(2, 0, 1)  # [horizon, B, embed_dim]
 
-        attn_mask = self.rel_pos_bias(query_len=horizon, cond_len=cond_tokens.size(0))
+        rel_bias = self.rel_pos_bias(query_len=horizon, cond_len=cond_tokens.size(0))
+        causal_mask = _causal_mask(
+            query_len=horizon,
+            cond_len=cond_tokens.size(0),
+            dynamic_tokens=self.seq_len,
+            device=query.device,
+        )
+        attn_mask = rel_bias + causal_mask
         attn_out, _ = self.cross_attention(query, cond_tokens, cond_tokens, attn_mask=attn_mask)
         attn_out = attn_out.permute(1, 2, 0)  # [B, embed_dim, horizon]
 
@@ -114,6 +134,12 @@ class ConditionedEpsilonTheta(nn.Module):
             x = F.interpolate(x, size=self.prediction_length, mode="linear", align_corners=False)
 
         cond_residual = self.context_proj(attn_out)  # [B, C, horizon]
+
+        # Apply FiLM multiplicative modulation from static conditioning.
+        film_scale = (1.0 + static_film).unsqueeze(-1)  # [B, C, 1]
+        x = x * film_scale
+        cond_residual = cond_residual * film_scale
+
         x_cond = x + cond_residual
 
         return self.base(x_cond, t, cond=attn_out)
@@ -138,3 +164,32 @@ class _RelativePositionBias(nn.Module):
         rel_index = rel + self.max_distance - 1
         bias = self.bias_table[rel_index]  # [L, S]
         return bias
+
+
+def _causal_mask(
+    query_len: int, cond_len: int, dynamic_tokens: int, device: torch.device
+) -> torch.Tensor:
+    """Create an additive causal mask for attention.
+
+    Dynamic conditioning tokens are ordered in time and should not be attended to from
+    queries that correspond to earlier or equal timesteps. The final conditioning token
+    is static and remains fully visible.
+    """
+
+    mask = torch.zeros((query_len, cond_len), device=device)
+
+    # Dynamic tokens are indices [0, dynamic_tokens - 1]; static token is the last column.
+    static_idx = cond_len - 1
+
+    q_ids = torch.arange(query_len, device=device).unsqueeze(1)
+    dyn_ids = torch.arange(dynamic_tokens, device=device).unsqueeze(0)
+
+    allowed_until = torch.clamp(q_ids, max=dynamic_tokens - 1)
+    block = dyn_ids > allowed_until
+    mask[:, :dynamic_tokens] = mask[:, :dynamic_tokens].masked_fill(block, float("-inf"))
+
+    # Static column remains zero (no masking).
+    if static_idx >= 0:
+        mask[:, static_idx] = 0.0
+
+    return mask
