@@ -129,6 +129,18 @@ class ConditionalTimeGradPredictionNetwork(nn.Module):
         hist_tokens = self.history_encoder(x_hist_norm.transpose(1, 2))  # [B, E, T]
         hist_tokens = hist_tokens.transpose(1, 2)  # [B, T, E]
 
+        # Ensure the historical token sequence matches the dynamic conditioning
+        # length in case padding or circular convolutions alter the effective
+        # width (e.g., very short contexts). This keeps cross-attention causal
+        # masks aligned with the conditioning tokens used by the denoiser.
+        if hist_tokens.size(1) != cond_dynamic_norm.size(1):
+            hist_tokens = nn.functional.interpolate(
+                hist_tokens.transpose(1, 2),
+                size=cond_dynamic_norm.size(1),
+                mode="linear",
+                align_corners=False,
+            ).transpose(1, 2)
+
         cond_dynamic_aug = torch.cat([cond_dynamic_norm, hist_tokens], dim=-1)
 
         hist_summary = self.history_pool(hist_tokens.transpose(1, 2)).squeeze(-1)
@@ -194,9 +206,12 @@ class ConditionalTimeGradPredictionNetwork(nn.Module):
             )
 
             cond = {"dynamic": cond_dynamic_aug, "static": cond_static_aug}
-            # Use the full prediction length inside the denoiser to keep the
-            # conditioning alignment logic intact, then take only the first
-            # step for the autoregressive roll-out.
+            # Sample the full prediction horizon so the denoiser can leverage
+            # its learned alignment and causal masking, then take only the
+            # first step for autoregressive rollout. The conditioning vectors
+            # already include the most recent generated history, so each call
+            # sees the updated context even though the internal denoiser
+            # operates on the canonical prediction length.
             step = self.model.diffusion.sample(
                 batch_size=batch_size * num_samples,
                 horizon=self.prediction_length,
