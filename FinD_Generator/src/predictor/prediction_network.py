@@ -157,12 +157,20 @@ class ConditionalTimeGradPredictionNetwork(nn.Module):
         *,
         num_samples: int = 1,
         clip_denoised: bool = True,
+        sampling_strategy: str = "masked_step",
     ) -> torch.Tensor:
         """Generate forecasts autoregressively with fixed normalization.
 
         Dynamic conditioning is only drawn from the provided history window.
         Each forecast step recomputes the history encoder to keep conditioning
         aligned with newly generated targets.
+
+        Args:
+            sampling_strategy: ``"masked_step"`` uses the single-timestep
+                masked sampler (fast, approximate; best for quick iterations or
+                long horizons), while ``"full_horizon"`` runs the full DDPM
+                reverse process each step (slower but mirrors the exact
+                ancestral rollout).
         """
 
         batch_size = x_hist.size(0)
@@ -206,20 +214,27 @@ class ConditionalTimeGradPredictionNetwork(nn.Module):
             )
 
             cond = {"dynamic": cond_dynamic_aug, "static": cond_static_aug}
-            # Sample the full prediction horizon so the denoiser can leverage
-            # its learned alignment and causal masking, then take only the
-            # first step for autoregressive rollout. The conditioning vectors
-            # already include the most recent generated history, so each call
-            # sees the updated context even though the internal denoiser
-            # operates on the canonical prediction length.
-            step = self.model.diffusion.sample(
-                batch_size=batch_size * num_samples,
-                horizon=self.prediction_length,
-                cond=cond,
-                clip_denoised=clip_denoised,
-            )  # [SB, C, prediction_length]
 
-            step = step[:, :, :1].permute(0, 2, 1)  # [SB, 1, C]
+            if sampling_strategy == "masked_step":
+                step = self.model.diffusion.sample_step(
+                    batch_size=batch_size * num_samples,
+                    horizon=self.prediction_length,
+                    target_index=0,
+                    cond=cond,
+                    clip_denoised=clip_denoised,
+                ).permute(0, 2, 1)  # [SB, 1, C]
+            elif sampling_strategy == "full_horizon":
+                full_block = self.model.diffusion.sample(
+                    batch_size=batch_size * num_samples,
+                    horizon=self.prediction_length,
+                    cond=cond,
+                    clip_denoised=clip_denoised,
+                ).permute(0, 2, 1)  # [SB, horizon, C]
+                step = full_block[:, :1, :]
+            else:
+                raise ValueError(
+                    "sampling_strategy must be 'masked_step' or 'full_horizon'"
+                )
             forecasts_norm.append(step)
 
             # Slide history and zero-fill dynamic conditioning for generated steps.

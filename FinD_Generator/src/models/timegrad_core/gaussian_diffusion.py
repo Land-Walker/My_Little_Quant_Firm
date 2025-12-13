@@ -8,7 +8,7 @@ core logic.
 """
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -232,14 +232,45 @@ class GaussianDiffusion(nn.Module):
         shape: torch.Size,
         cond: Optional[dict[str, Any]] = None,
         clip_denoised: bool = True,
+        spatial_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Generate samples by iterating the reverse diffusion process."""
+        """Generate samples by iterating the reverse diffusion process.
+
+        Args:
+            shape: Output shape ``[B, C, T]`` for the denoising trajectory.
+            cond: Optional conditioning dictionary forwarded to the denoiser.
+            clip_denoised: Whether to clamp reconstructed ``x_0`` predictions.
+            spatial_mask: Optional mask of the same shape as ``shape`` (or
+                broadcastable) indicating which positions to actively denoise.
+                Unmasked locations remain zero throughout the reverse process,
+                allowing targeted sampling of specific timesteps/channels
+                without evolving the full horizon volume.
+        """
 
         device = self.betas.device
         img = torch.randn(shape, device=device)
+        background_noise = None
+
+        if spatial_mask is not None:
+            if spatial_mask.shape != shape:
+                try:
+                    spatial_mask = spatial_mask.expand(shape)
+                except RuntimeError as exc:
+                    raise ValueError(
+                        "spatial_mask must be broadcastable to the sample shape"
+                    ) from exc
+
+            # Preserve a frozen background so masked-out positions remain random
+            # rather than collapsing to zeros across repeated sampling calls.
+            background_noise = img.detach().clone()
+
         for i in reversed(range(self.diff_steps)):
             t = torch.full((shape[0],), i, device=device, dtype=torch.long)
             img, _ = self.p_sample(img, t, cond=cond, clip_denoised=clip_denoised)
+
+            if spatial_mask is not None:
+                img = img * spatial_mask + background_noise * (1.0 - spatial_mask)
+
         return img
 
     @torch.no_grad()
@@ -254,3 +285,39 @@ class GaussianDiffusion(nn.Module):
 
         shape = (batch_size, self.input_size, horizon)
         return self.p_sample_loop(shape=shape, cond=cond, clip_denoised=clip_denoised)
+
+    @torch.no_grad()
+    def sample_step(
+        self,
+        batch_size: int,
+        horizon: int,
+        *,
+        target_index: int,
+        channel_slice: Optional[Sequence[int] | slice] = None,
+        cond: Optional[dict[str, Any]] = None,
+        clip_denoised: bool = True,
+    ) -> torch.Tensor:
+        """Sample a specific timestep (and optional channel subset) via DDPM.
+
+        The denoiser still receives a full ``prediction_length``-sized context
+        but a spatial mask constrains diffusion updates to the requested
+        timestep/channels, avoiding unnecessary computation of the entire
+        horizon during autoregressive rollout.
+        """
+
+        device = self.betas.device
+        channel_indices = torch.arange(self.input_size, device=device)
+        if channel_slice is not None:
+            channel_indices = channel_indices[channel_slice]
+
+        mask = torch.zeros((batch_size, self.input_size, horizon), device=device)
+        mask[:, channel_indices, target_index : target_index + 1] = 1.0
+
+        samples = self.p_sample_loop(
+            shape=(batch_size, self.input_size, horizon),
+            cond=cond,
+            clip_denoised=clip_denoised,
+            spatial_mask=mask,
+        )
+
+        return samples[:, channel_indices, target_index : target_index + 1]
