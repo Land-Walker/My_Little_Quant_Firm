@@ -27,15 +27,26 @@ class ConditionedEpsilonTheta(nn.Module):
         embed_dim: int = 64,
         attn_heads: int = 4,
         attn_dropout: float = 0.1,
+        cond_strategy: str = "fast",
+        rnn_type: str = "lstm",
     ) -> None:
         super().__init__()
 
         self.base = base_epsilon
         self.seq_len = seq_len
         self.prediction_length = prediction_length
+        self.cond_strategy = cond_strategy.lower()
 
         self.dynamic_encoder = nn.Linear(cond_dynamic_dim, embed_dim)
         self.static_encoder = nn.Linear(cond_static_dim, embed_dim)
+
+        if self.cond_strategy not in {"fast", "slow"}:
+            raise ValueError("cond_strategy must be either 'fast' or 'slow'")
+
+        rnn_type = rnn_type.lower()
+        if rnn_type not in {"lstm", "gru"}:
+            raise ValueError("rnn_type must be either 'lstm' or 'gru'")
+        self.rnn_type = rnn_type
 
         self.query_proj = nn.Conv1d(base_epsilon.input_size, embed_dim, kernel_size=1)
         self.context_proj = nn.Conv1d(embed_dim, base_epsilon.input_size, kernel_size=1)
@@ -46,6 +57,10 @@ class ConditionedEpsilonTheta(nn.Module):
             dropout=attn_dropout,
             batch_first=False,
         )
+
+        rnn_cls = nn.LSTM if self.rnn_type == "lstm" else nn.GRU
+        self.history_encoder = nn.Linear(base_epsilon.input_size, embed_dim)
+        self.history_rnn = rnn_cls(embed_dim, embed_dim, batch_first=True)
 
         # Use a generous distance budget so sliding-window conditioning in
         # autoregressive loops does not clip relative offsets when the
@@ -112,6 +127,51 @@ class ConditionedEpsilonTheta(nn.Module):
         static_token = self.static_encoder(static).unsqueeze(1)  # [B, 1, embed_dim]
         static_film = self.static_film(static_token.squeeze(1))  # [B, C]
 
+        if self.cond_strategy == "fast":
+            cond_context = self._fast_conditioning(
+                x=x,
+                horizon=horizon,
+                dyn_tokens=dyn_tokens,
+                dynamic_len=dynamic_len,
+                static_token=static_token,
+            )
+        else:
+            cond_context = self._slow_conditioning(
+                x=x,
+                horizon=horizon,
+                dyn_tokens=dyn_tokens,
+                static_token=static_token,
+            )
+
+        # Align time dimension to the base denoiser's expected prediction length if needed.
+        if horizon != self.prediction_length:
+            cond_context = self.pos_align(cond_context)
+            cond_context = self.cond_upsampler(cond_context)
+            cond_context = F.interpolate(
+                cond_context, size=self.prediction_length, mode="linear", align_corners=False
+            )
+            x = F.interpolate(x, size=self.prediction_length, mode="linear", align_corners=False)
+
+        cond_residual = self.context_proj(cond_context)  # [B, C, horizon]
+
+        # Apply FiLM multiplicative modulation from static conditioning.
+        film_scale = (1.0 + static_film).unsqueeze(-1)  # [B, C, 1]
+        x = x * film_scale
+        cond_residual = cond_residual * film_scale
+
+        x_cond = x + cond_residual
+
+        return self.base(x_cond, t, cond=cond_context)
+
+    def _fast_conditioning(
+        self,
+        x: torch.Tensor,
+        horizon: int,
+        dyn_tokens: torch.Tensor,
+        dynamic_len: int,
+        static_token: torch.Tensor,
+    ) -> torch.Tensor:
+
         cond_tokens = torch.cat([dyn_tokens, static_token], dim=1)  # [B, dynamic_len+1, embed_dim]
         cond_tokens = cond_tokens.transpose(0, 1)  # [cond_seq, B, embed_dim]
 
@@ -129,25 +189,23 @@ class ConditionedEpsilonTheta(nn.Module):
         )
         attn_mask = rel_bias.to(query.dtype) + causal_mask
         attn_out, _ = self.cross_attention(query, cond_tokens, cond_tokens, attn_mask=attn_mask)
-        attn_out = attn_out.permute(1, 2, 0)  # [B, embed_dim, horizon]
+        return attn_out.permute(1, 2, 0)  # [B, embed_dim, horizon]
 
-        # Align time dimension to the base denoiser's expected prediction length if needed.
-        if horizon != self.prediction_length:
-            attn_out = self.pos_align(attn_out)
-            attn_out = self.cond_upsampler(attn_out)
-            attn_out = F.interpolate(attn_out, size=self.prediction_length, mode="linear", align_corners=False)
-            x = F.interpolate(x, size=self.prediction_length, mode="linear", align_corners=False)
+    def _slow_conditioning(
+        self,
+        x: torch.Tensor,
+        horizon: int,
+        dyn_tokens: torch.Tensor,
+        static_token: torch.Tensor,
+    ) -> torch.Tensor:
+        history_tokens = self.history_encoder(x.transpose(1, 2))  # [B, horizon, embed_dim]
+        rnn_input = torch.cat([dyn_tokens, history_tokens, static_token], dim=1)  # [B, seq+horizon+1, embed]
+        rnn_output, _ = self.history_rnn(rnn_input)
 
-        cond_residual = self.context_proj(attn_out)  # [B, C, horizon]
+        # Take the slice aligned with the history portion so conditioning length matches horizon.
+        cond_slice = rnn_output[:, dyn_tokens.size(1) : dyn_tokens.size(1) + horizon, :]
+        return cond_slice.permute(0, 2, 1)  # [B, embed_dim, horizon]
 
-        # Apply FiLM multiplicative modulation from static conditioning.
-        film_scale = (1.0 + static_film).unsqueeze(-1)  # [B, C, 1]
-        x = x * film_scale
-        cond_residual = cond_residual * film_scale
-
-        x_cond = x + cond_residual
-
-        return self.base(x_cond, t, cond=attn_out)
 
 
 class _RelativePositionBias(nn.Module):
