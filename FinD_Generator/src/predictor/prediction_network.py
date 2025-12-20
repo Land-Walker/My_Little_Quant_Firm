@@ -40,6 +40,8 @@ class ConditionalTimeGradPredictionNetwork(nn.Module):
         cond_embed_dim: int = 64,
         cond_attn_heads: int = 4,
         cond_attn_dropout: float = 0.1,
+        cond_strategy: str = "fast",
+        rnn_type: str = "lstm",
         scale_eps: float = 1e-5,
     ) -> None:
         super().__init__()
@@ -91,6 +93,8 @@ class ConditionalTimeGradPredictionNetwork(nn.Module):
             cond_embed_dim=cond_embed_dim,
             cond_attn_heads=cond_attn_heads,
             cond_attn_dropout=cond_attn_dropout,
+            cond_strategy=cond_strategy,
+            rnn_type=rnn_type,
         )
 
     def _normalize_history(
