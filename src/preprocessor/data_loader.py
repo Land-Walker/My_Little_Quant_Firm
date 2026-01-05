@@ -29,7 +29,7 @@ from typing import Dict, List, Optional, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
-from . import config
+from .. import config
 
 # =========================================================
 # 0. Basic helpers (from your initial code)
