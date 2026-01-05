@@ -29,8 +29,8 @@ import pandas as pd
 import torch
 
 from src import config
-from src.data_collector import DataCollector
-from src.data_loader import TimeGradDataModule
+from src.preprocessor.data_collector import DataCollector
+from src.preprocessor.data_loader import TimeGradDataModule
 from src.predictor import ConditionalTimeGradPredictionNetwork
 from src.training import ConditionalTimeGradTrainingNetwork
 
