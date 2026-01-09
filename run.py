@@ -31,8 +31,8 @@ import torch
 from src import config
 from src.preprocessor.data_collector import DataCollector
 from src.preprocessor.data_loader import TimeGradDataModule
-from src.predictor import ConditionalTimeGradPredictionNetwork
-from src.training import ConditionalTimeGradTrainingNetwork
+from src.predictor.prediction_network import ConditionalTimeGradPredictionNetwork
+from src.training.training_network import ConditionalTimeGradTrainingNetwork
 
 def _load_local_data() -> Dict[str, pd.DataFrame]:
     """Load pre-downloaded parquet data from ``data/raw``.
@@ -174,7 +174,6 @@ def train_and_validate(
         print(f"Epoch {epoch + 1}: train_loss={avg_train:.4f}, val_loss={avg_val:.4f}")
         model.train()
 
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), checkpoint_path)
     print(f"Saved checkpoint to {checkpoint_path}")
 
@@ -201,7 +200,11 @@ def run_inference(
         cond_static=cond_static,
         num_samples=args.num_samples,
     )
+
+    output_path = checkpoint_path.parent / "forecasts.pt"
+    torch.save(samples.cpu(), output_path)
     print(f"Generated samples shape: {samples.shape}")
+    print(f"✅ Saved forecasts to {output_path}")
 
 
 def parse_args() -> argparse.Namespace:
